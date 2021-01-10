@@ -78,6 +78,15 @@ const char *gatewayName = "espnowgw2";
 const char *homeseer = HOMESEER_IP;
 char full_esp_now_ssid[30];
 
+WiFiClient espClient;
+PubSubClient client(espClient);
+WiFiServer TelnetServer(23);
+WiFiClient Telnet;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "nl.pool.ntp.org", 3600, 300000);
+WebServer server(80);
+esp_now_peer_info_t slave;
+
 struct COMMAND_DATA
 {
   char mac[20];
@@ -88,20 +97,8 @@ struct COMMAND_DATA
   boolean sensorEverSeen;
 };
 COMMAND_DATA commandQueue[20]; // this tabel holds all the sensors the gateway services
+
 int numberOfSensors = 0;
-
-WiFiClient espClient;
-PubSubClient client(espClient);
-WiFiServer TelnetServer(23);
-WiFiClient Telnet;
-
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "nl.pool.ntp.org", 3600, 300000);
-
-WebServer server(80);
-
-esp_now_peer_info_t slave;
-
 int CHANNEL;             // WiFi channel of connecting AP
 boolean flagOTA = false; // If OTA active or not
 long lastMsg = -600000;
@@ -110,6 +107,8 @@ char macStr[18];     // receiving mac_addr string of esp data. Filled by ISR: On
 char bs[250];        // receiving sensor data. Filled by ISR: OnDataRecv
 char md[250];        // receiving mqtt data. Filled by ISR: mqttCallback
 char mt[250];        // receiving mqtt topic. Filled by ISR: mqttCallback
+long telnetTimer = -1000; // make sure it fires the first time without waiting
+int failedMqttConnect = 0;
 
 volatile boolean espCmdReceived = false;
 volatile boolean mqttCmdReceived = false;
@@ -141,9 +140,6 @@ void setup()
   delay(100);
   hsWriteLog();
 } // end setup
-
-long telnetTimer = -1000; // make sure it fires the first time without waiting
-
 void loop()
 {
   if (millis() - telnetTimer > 500)
@@ -178,7 +174,6 @@ void loop()
   }
   delay(1);
 } // end loop
-
 void checkWiFiConnection()
 {
   if (WiFi.status() != WL_CONNECTED)
@@ -203,7 +198,6 @@ void checkWiFiConnection()
     reconnect();
   }
 }
-
 void processEspData()
 {
   Telnet.print("ESP-Now Packet Recv from: ");
@@ -339,7 +333,6 @@ void processEspData()
     jsonBuffer.clear();
   }
 }
-
 void sendSensorDataInQueue()
 {
   // send data to sensor if waiting in queue
@@ -385,7 +378,6 @@ void sendSensorDataInQueue()
     }
   }
 } // sendSensorDataInQueue
-
 void publishGatewayStatus()
 {
   // publish gateway status
@@ -452,7 +444,6 @@ void publishGatewayStatus()
     }
   }
 } //end publishGatewayStatus
-
 void initWifi()
 {
   WiFi.setHostname(gatewayName);
@@ -507,7 +498,6 @@ void initWifi()
   }
 
 } // end initWifi
-
 void handleTelnet()
 {
   if (TelnetServer.hasClient())
@@ -524,3 +514,480 @@ void handleTelnet()
     }
   }
 } // end handleTelnet
+void hsWriteLog()
+{
+  // standard practisch to send a log entry to my domotica system
+  // Send start message to homeseer log
+  // Write an entry in the HomeSeer logfile
+  HTTPClient http;
+  Serial.println("Write log entry to HomeSeer");
+  String url = "http://";
+
+  // write startmessage into homeseer device 952
+  url += homeseer;
+  url += "/JSON?request=setdeviceproperty&ref=952&property=NewDevString&value=error%20";
+  url += gatewayName;
+  url += "%20with%20ipaddress%20";
+  url += WiFi.localIP().toString();
+  url += "%20has%20(re)started.";
+  http.begin(url);
+  int httpCode = http.GET();
+  // httpCode will be negative on error
+  if (httpCode > 0)
+  {
+    // HTTP header has been send and Server response header has been handled
+    Serial.printf("[HTTP] GET. homeseer writelog success.. responce: %d\n", httpCode);
+  }
+  else
+  {
+    Serial.printf("[HTTP] GET. homeseer writelog failed.. error: %s\n", http.errorToString(httpCode).c_str());
+    delay(30000);
+    ESP.restart();
+  }
+  http.end();
+
+  // Start event to write the startmessage in the homeseer log
+  url = "http://";
+  url += homeseer;
+  url += "/JSON?request=runevent&group=System&name=WriteLog";
+  http.begin(url);
+  httpCode = http.GET();
+  // httpCode will be negative on error
+  if (httpCode > 0)
+  {
+    // HTTP header has been send and Server response header has been handled
+    Serial.printf("[HTTP] GET. homeseer writelog success.. responce: %d\n", httpCode);
+  }
+  else
+  {
+    Serial.printf("[HTTP] GET. homeseer writelog failed.. error: %s\n", http.errorToString(httpCode).c_str());
+    delay(30000);
+    ESP.restart();
+  }
+  http.end();
+}
+void hsWriteLogError()
+{ // Send error message to homeseer log
+  HTTPClient http;
+  Serial.println("Write log entry to HomeSeer");
+  String url = "http://";
+  url += homeseer;
+  url += "/JSON?request=setdeviceproperty&ref=952&property=NewDevString&value=Error%20More%20then%2020%20sensors%20on%20espnowgw1%20with%20ipaddress%20";
+  url += WiFi.localIP().toString();
+  http.begin(url);
+  int httpCode = http.GET();
+  // httpCode will be negative on error
+  if (httpCode > 0)
+  {
+    // HTTP header has been send and Server response header has been handled
+    Serial.printf("[HTTP] GET. homeseer writelog success.. responce: %d\n", httpCode);
+  }
+  else
+  {
+    Serial.printf("[HTTP] GET. homeseer writelog failed.. error: %s\n", http.errorToString(httpCode).c_str());
+    delay(30000);
+    ESP.restart();
+  }
+  http.end();
+
+  url = "http://";
+  url += homeseer;
+  url += "/JSON?request=runevent&group=System&name=WriteLog";
+  http.begin(url);
+  httpCode = http.GET();
+  // httpCode will be negative on error
+  if (httpCode > 0)
+  {
+    // HTTP header has been send and Server response header has been handled
+    Serial.printf("[HTTP] GET. homeseer writelog success.. responce: %d\n", httpCode);
+  }
+  else
+  {
+    Serial.printf("[HTTP] GET. homeseer writelog failed.. error: %s\n", http.errorToString(httpCode).c_str());
+    delay(30000);
+    ESP.restart();
+  }
+  http.end();
+}
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  /*
+   Callback when data is sent from the Gateway to the sensor
+   We will send a command to a sensor based on commands received by MQTT
+   The sub will log if the command is received by the sensor
+
+*/
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X%02X%02X%02X%02X%02X",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+//  Serial.print("ESP-Now Return Packet Sent to: ");
+//  Serial.println(macStr);
+//  Serial.print("ESP-Now Return Packet Send Status: ");
+//  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    for (int i = 0; i < numberOfSensors; i++) {
+      if (strcmp(commandQueue[i].mac, macStr) == 0) { // we found the sensor
+        commandQueue[i].jsonSentData[0] = NULL;
+//        Serial.println("Command send and received. CommandQueue cleared");
+      }
+    }
+  }
+}
+void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
+/*
+   Callback when data is received from the sensor
+   1: Log that a packet is receive from mac_addr
+   2: copy sensor data to secure it
+   3: send data to sensor if a command is waiting the sensor (done in main loop)
+   4: publish sensor data over mqtt (done in main loop)
+*/
+//  Serial.print("ESP-Now Packet Recv");
+  if (!espCmdReceived) {
+    snprintf(macStr, sizeof(macStr), "%02X%02X%02X%02X%02X%02X",
+             mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+//    Serial.print("ESP-Now Packet Recv from: ");
+//    Serial.println(macStr);
+//    Serial.print("ESP-Now Packet Data: ");
+    // save data so it can be processed with lower priority in the main loop
+    for (int i = 0; i < data_len; i++) {
+      bs[i] = data[i];
+    }
+    bs[data_len] = NULL;
+//    Serial.println(bs);
+    for (int i = 0; i < 6; ++i ) {
+      peerAddr[i] = (uint8_t) mac_addr[i];
+    }
+    espCmdReceived = true;
+  }
+//  else {
+//    Serial.println("Previous ESP command not processed yet. Skipping this one");
+//  }
+}
+void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
+  if (mqttCmdReceived)
+  {
+    Serial.println("Previous MQTT command not processed yet. Skipping this one");
+  }
+  else
+  {
+    strcpy(mt, topic);
+    strncpy(md, (char *)payload, length);
+    md[length] = NULL;
+    //    Serial.println("MQTT command received");
+  }
+  mqttCmdReceived = true;
+}
+void processMqttData()
+{
+  // data is in md[] and topic is in mt[]
+  Telnet.print("Processing MQTT message [");
+  Telnet.print(mt);
+  Telnet.print("] ");
+  Telnet.println(md);
+
+  // parse topic in seperate items
+  char items[5][20];
+  byte _topicPos = 0;
+  byte _itemPos = 0;
+  byte _slash_count = 0;
+  items[0][0] == NULL;
+  while (1)
+  {
+    if (mt[_topicPos] == NULL)
+    {
+      items[_slash_count][_itemPos] = NULL;
+      break;
+    }
+    if (mt[_topicPos] == 47)
+    {
+      if (_topicPos != 0)
+      {
+        items[_slash_count][_itemPos] = NULL;
+        _slash_count++;
+        _itemPos = 0;
+        items[_slash_count][_itemPos] = NULL;
+      }
+    }
+    else
+    {
+      items[_slash_count][_itemPos] = mt[_topicPos];
+      _itemPos++;
+    }
+    _topicPos++;
+  }
+
+  boolean sensorFound = false;
+  for (int i = 0; i < numberOfSensors; i++)
+  {
+    if (strcmp(commandQueue[i].mac, items[1]) == 0)
+    { // found sensor in tabel
+      char jsonTmp[250];
+      StaticJsonBuffer<250> jsonBuffer;
+      if (commandQueue[i].jsonSentData[0] == NULL)
+      {
+        JsonObject &root = jsonBuffer.createObject();
+        root[items[2]] = md;
+        root.printTo(commandQueue[i].jsonSentData, root.measureLength() + 1);
+      }
+      else
+      {
+        strcpy(jsonTmp, commandQueue[i].jsonSentData);
+        //        Telnet.println(jsonTmp);
+        JsonObject &root = jsonBuffer.parseObject(jsonTmp);
+        if (!root.success())
+        {
+          Telnet.println("parseObject() failed");
+        }
+        root[items[2]] = md;
+        root.printTo(commandQueue[i].jsonSentData, root.measureLength() + 1);
+      }
+      //      jsonBuffer.clear();
+      if (strcmp(items[2], "updatefreq") == 0)
+      {
+        commandQueue[i].updateFreq = atoi(md);
+      }
+      sensorFound = true;
+      Telnet.print("mac_addr found. Command: ");
+      Telnet.print(commandQueue[i].jsonSentData);
+      Telnet.println(" placed in queue");
+      break;
+    }
+  }
+  if (sensorFound == false)
+  {
+    // insert new sensor in tabel
+    Telnet.println("New sensor received via MQTT");
+    //   Telnet.print("mac_addr: ");
+    strncpy(commandQueue[numberOfSensors].mac, items[1], 20);
+    strcpy(commandQueue[numberOfSensors].lastTimeSeen, "Connection Lost");
+    commandQueue[numberOfSensors].epochTime = 0;
+    commandQueue[numberOfSensors].sensorEverSeen = false;
+    commandQueue[numberOfSensors].jsonSentData[0] = NULL;
+    strcat(commandQueue[numberOfSensors].jsonSentData, "{\"");
+    strcat(commandQueue[numberOfSensors].jsonSentData, items[2]);
+    strcat(commandQueue[numberOfSensors].jsonSentData, "\":\"");
+    strcat(commandQueue[numberOfSensors].jsonSentData, md);
+    strcat(commandQueue[numberOfSensors].jsonSentData, "\"}");
+    if (strcmp(items[2], "updatefreq") == 0)
+    {
+      commandQueue[numberOfSensors].updateFreq = atoi(md);
+    }
+    // add it to the sensor peer list
+    slave.channel = 0;
+    slave.encrypt = 0;
+    // convert StringMac[12] into bytemac[6]
+    int ii = 0;
+    for (int i = 0; i < 12; i += 2)
+    {
+      slave.peer_addr[ii] = getVal(items[1][i + 1]) + (getVal(items[1][i]) << 4);
+      //      Telnet.print(slave.peer_addr[ii]);
+      ii += 1;
+    }
+
+    //    Telnet.println();
+    const esp_now_peer_info_t *peer = &slave;
+    esp_err_t addStatus = esp_now_add_peer(peer);
+    if (addStatus == ESP_OK)
+    {
+      // Pair success
+      Telnet.print("Command: ");
+      Telnet.println(commandQueue[numberOfSensors].jsonSentData);
+    }
+    else if (addStatus == ESP_ERR_ESPNOW_NOT_INIT)
+      Telnet.println("ESPNOW Not Init");
+    else if (addStatus == ESP_ERR_ESPNOW_ARG)
+      Telnet.println("Invalid Argument");
+    else if (addStatus == ESP_ERR_ESPNOW_FULL)
+      Telnet.println("Peer list full");
+    else if (addStatus == ESP_ERR_ESPNOW_NO_MEM)
+      Telnet.println("Out of memory");
+    else if (addStatus == ESP_ERR_ESPNOW_EXIST)
+      Telnet.println("Peer Exists");
+    else
+      Telnet.println("Not sure what happened");
+    numberOfSensors++;
+    if (numberOfSensors > 20)
+    {
+      Telnet.println("Error: more then 20 sensors on the gateway!");
+      hsWriteLogError();
+      numberOfSensors--;
+    }
+  }
+}
+byte getVal(char c)
+{
+  if (c >= '0' && c <= '9')
+    return (byte)(c - '0');
+  else
+    return (byte)(c - 'A' + 10);
+}
+void reconnect()
+{
+  // Loop until we're reconnected
+  while (!client.connected())
+  {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    char gatewayStatusTopic[100] = {'\0'};
+    strcat(gatewayStatusTopic, gatewayName);
+    strcat(gatewayStatusTopic, "/status");
+    if (client.connect(gatewayName, gatewayStatusTopic, MQTTQOS0, true, "Connection Lost"))
+    {
+      Serial.println("connected");
+      // Once connected, publish an announcement...
+      // ... and resubscribe
+      client.subscribe("espnowgw/#");
+    }
+    else
+    {
+      Serial.print("failed to connect to MQTT, rc=");
+      Serial.print(client.state());
+      ++failedMqttConnect;
+      if (failedMqttConnect > 500)
+      {
+        Serial.println(" Just reboot we lost the mqtt connection so badly");
+        delay(1000);
+        ESP.restart();
+      }
+      delay(1000);
+    }
+  }
+  if (failedMqttConnect > 400)
+    failedMqttConnect = 0;
+}
+void initOTA()
+{
+  ArduinoOTA.setHostname(gatewayName);
+  ArduinoOTA
+      .onStart([]() {
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH)
+          type = "sketch";
+        else // U_SPIFFS
+          type = "filesystem";
+
+        // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+        Serial.println("Start updating " + type);
+      })
+      .onEnd([]() {
+        Serial.println("\nEnd");
+      })
+      .onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+      })
+      .onError([](ota_error_t error) {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR)
+          Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR)
+          Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR)
+          Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR)
+          Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR)
+          Serial.println("End Failed");
+      });
+
+  ArduinoOTA.begin();
+}
+
+// WebServer routines
+void initWebserver()
+{
+  server.on("/", handleRoot);
+  server.on("/restart", restart);
+  server.on("/updateOTA", updateOTA);
+  server.on("/cancelOTA", cancelUpdateOTA);
+//  server.on("/sendDataInQueue", sendDataInQueue);
+  server.onNotFound(handleNotFound);
+  server.begin();
+  Serial.println("HTTP server started");
+  delay(10);
+}
+void updateOTA()
+{
+  server.send(200, "text/plain", "Going into OTA programming mode");
+  flagOTA = true;
+}
+void cancelUpdateOTA()
+{
+  server.send(200, "text/plain", "Canceling OTA programming mode");
+  flagOTA = false;
+}
+void sendDataInQueue()
+{
+  server.send(200, "text/plain", "Sending data in Queue to Sensors");
+  sendSensorDataInQueue();
+}
+void handleRoot()
+{
+  String message = "Hello from ";
+  message += gatewayName;
+  message += "\n\nProgram: ESPNow32_Gateway_V2.0\n";
+  message += "Telnet to this device for debug output\n";
+  message += "\nCurrent time: ";
+  message += timeClient.getFormattedTime();
+  message += "\nUsages:\n";
+  message += "/                  - This messages\n";
+  message += "/updateOTA         - Put device in OTA programming mode\n";
+  message += "/cancelOTA         - Cancel OTA programming mode\n";
+  message += "/restart           - Restarts the ESPNow gateway\n\n";
+  message += "Programming mode: ";
+  //  message += flagOTA;
+  message += "\nNumber of sensors: ";
+  message += numberOfSensors;
+  message += "\n\n";
+  message += "N) MAC           UpdateFreq LastTimeSeen  JsonSentData\n";
+  for (int i = 0; i < numberOfSensors; i++)
+  {
+    message += i;
+    message += ") ";
+    message += commandQueue[i].mac;
+    message += "  ";
+    message += commandQueue[i].updateFreq;
+    message += "         ";
+    message += commandQueue[i].lastTimeSeen;
+    message += "  ";
+    message += commandQueue[i].jsonSentData;
+    message += "\n";
+  }
+
+  message += "\nGateway Macadres: ";
+  message +=  WiFi.macAddress();
+  message += "\nWiFi channel: ";
+  message += WiFi.channel();
+  message += "\nRSSI: ";
+  message += WiFi.RSSI();
+  message += "\nOTA flag: ";
+  message += flagOTA;
+  message += "\nFree memory: ";
+  message += ESP.getFreeHeap();
+  message += "\nfailedMqttReconnect: ";
+  message += failedMqttConnect;
+  message += "\n\n";
+  server.send(200, "text/plain", message);
+}
+void restart()
+{
+  server.send(200, "text/plain", "OK restarting");
+  delay(2000);
+  ESP.restart();
+}
+void handleNotFound()
+{
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++)
+  {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  }
+  server.send(404, "text/plain", message);
+}
+
