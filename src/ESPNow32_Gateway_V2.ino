@@ -96,10 +96,9 @@ struct COMMAND_DATA
   char jsonSentData[249];
   boolean sensorEverSeen;
 };
-COMMAND_DATA commandQueue[20]; // this tabel holds all the sensors the gateway services
+COMMAND_DATA commandQueue[20]; // this tabel holds all the sensors of the gateway services
 
 int numberOfSensors = 0;
-int CHANNEL;             // WiFi channel of connecting AP
 boolean flagOTA = false; // If OTA active or not
 long lastMsg = -600000;
 uint8_t peerAddr[6]; // receiving mac_addr of esp data. Filled by ISR: OnDataRecv
@@ -118,7 +117,6 @@ void setup()
   Serial.begin(115200);
   Serial.println();
   initWifi();
-  CHANNEL = WiFi.channel();
   if (esp_now_init() != 0)
   {
     Serial.println("*** ESP_Now init failed");
