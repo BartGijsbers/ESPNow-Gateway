@@ -922,7 +922,7 @@ void handleRoot()
 {
   String message = "Hello from ";
   message += gatewayName;
-  message += "\n\nProgram: ESPNow32_Gateway_V2.0\n";
+  message += "\n\nProgram: ESPNow32_Gateway_V2.1\n";
   message += "Telnet to this device for debug output\n";
   message += "\nCurrent time: ";
   message += timeClient.getFormattedTime();
