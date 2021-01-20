@@ -1,5 +1,5 @@
-# ESPNow-Gateway
-ESPNow to MQTT Gateway
+# ESPNow-Gateway and Sensors
+ESPNow to MQTT Gateway and Sensors
 
 ## Bridge between espnow and MQTT
 The ESPNow gateway can run on any ESP32 board/chip. 
@@ -36,5 +36,18 @@ This wil set the updatefrequency to 600 seconds in the gateway and sensor.
 
 
 ## Client Operation
-A client will scan for SSID's starting with "ESPNOW" and select the strongest.
-It will only do this during boot. It will store the outcome 
+* A sensor will scan for SSID's starting with "ESPNOW" and select the strongest.
+It will only do this during boot. It will then store mac-address of the gateway and WiFi channel in RTC memory.
+If no gateway is found the sensor will go to sleep and will multiply his wakeup time by 2 (with a maximum of 7200 sec). This is prevent battery drainage if no gateway is found.
+
+* Based on the "updatefreq" counter, the sensor will go to sleep. When waking up it will send his sensor data combined with battery voltage and updatefrequency. All data will be put in a JSON string. After sending the data the sensor will check if the data is delivered to the gateway. If the data is not delivered 10 times in a row, the sensor assumes the gateway is down and will start the gateway selection at the next wakeup.
+
+* A PIR sensor will wakeup after the "updatefreq" counter or if motion is detected (hardware based wakeup). To prevent continuous waking up the sensor will not wake up for "montiontime" time even if motion is detected.
+
+### Receiving commands
+After sending data sensor will wait (50msec) to see if there is data to receive. If there is data the commands will executed.
+
+# Limits
+* A gateway supports a maximum of 20 sensors. You can have multiply gateways.
+* The range of espnow is very good. Because it used a low bandwith. It is much better then WiFi.
+* Battery live with a 1500mah battery is around 1.5 years.
